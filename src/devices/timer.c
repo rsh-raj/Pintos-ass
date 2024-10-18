@@ -108,7 +108,7 @@ timer_sleep (int64_t ticks)
 
   /* Add the thread to sleeper list and block it */
   lock_acquire(&sleeper_lock);
-  list_insert_ordered(&sleeper_list, &current->elem, thread_wakeup_comp);
+  list_insert_ordered(&sleeper_list, &current->elem, thread_wakeup_comp,NULL);
   lock_release(&sleeper_lock);
   thread_block();
   intr_set_level(old_intr_level);
@@ -190,7 +190,6 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
-  thread_tick ();
   lock_acquire(&sleeper_lock);
   while(!list_empty(&sleeper_list)){
     struct thread *t = list_entry(list_front(&sleeper_list),struct thread, elem);
@@ -199,6 +198,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
     thread_unblock(t);
   }
   lock_release(&sleeper_lock);
+  thread_tick ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
