@@ -19,8 +19,12 @@
 
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
+/* list to maintain the sleeping threads */
 static struct list sleeper_list;
+/* sleeper list lock */
 static struct lock sleeper_lock;
+/* wakeup thread */
+static struct thread *wakeup_thread = NULL;
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
@@ -30,6 +34,7 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
+static void wakeup_thread_fun(void *aux UNUSED);
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -40,6 +45,7 @@ timer_init (void)
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
   list_init(&sleeper_list);
   lock_init(&sleeper_lock);
+  wakeup_thread = thread_create("wakeup", PRI_MAX, wakeup_thread_fun, NULL);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -86,7 +92,8 @@ timer_elapsed (int64_t then)
 {
   return timer_ticks () - then;
 }
-bool thread_wakeup_comp(const struct list_elem *a, const struct list_elem *b)
+/* Comparator function to compare wakeup time of two threads */
+static bool thread_wakeup_comp(const struct list_elem *a, const struct list_elem *b)
 {
   struct thread *t1 = list_entry(a, struct thread, elem);
   struct thread *t2 = list_entry(b, struct thread, elem);
@@ -113,6 +120,30 @@ timer_sleep (int64_t ticks)
   thread_block();
   intr_set_level(old_intr_level);
 
+}
+
+static void wakeup_thread_fun(void *aux UNUSED)
+{
+  while(true)
+  {
+    
+    lock_acquire(&sleeper_lock);
+    int64_t current_time = timer_ticks();
+    struct list_elem *first = list_begin(&sleeper_list);
+    struct list_elem *last = list_end(&sleeper_list);
+    /* iterate through threads and woken up the threads which wakeup time has arrived */
+    while(first != last)
+    {
+      struct thread *t = list_entry(first, struct thread, elem);
+      if(t->wakeup_time > current_time) break;
+      first = list_remove(first);
+      thread_unblock(t);
+    }
+    lock_release(&sleeper_lock);
+    /* block the wakeup thread until more thread need to be woken up*/
+    thread_block();
+
+  }
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -192,11 +223,11 @@ timer_interrupt (struct intr_frame *args UNUSED)
   ticks++;
   thread_tick ();
   lock_acquire(&sleeper_lock);
-  while(!list_empty(&sleeper_list)){
-    struct thread *t = list_entry(list_front(&sleeper_list),struct thread, elem);
-    if (t->wakeup_time > ticks) break;
-    list_pop_front(&sleeper_list);
-    thread_unblock(t);
+  /* unblock the wakeup thread if some threads need to woken up */
+  if(!list_empty(&sleeper_list) && wakeup_thread != NULL)
+  {
+    struct thread *t = list_entry(list_front(&sleeper_list), struct thread, elem);
+    if(t->wakeup_time <= ticks) thread_unblock(wakeup_thread);
   }
   lock_release(&sleeper_lock);
 }

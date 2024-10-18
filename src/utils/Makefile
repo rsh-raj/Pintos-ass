@@ -1,6 +1,6 @@
 all: setitimer-helper squish-pty squish-unix
 
-CC = gcc
+CC = /usr/bin/aarch64-none-linux-gnu-gcc-10.3.1
 CFLAGS = -Wall -W
 LOADLIBES = -lm
 setitimer-helper: setitimer-helper.o
