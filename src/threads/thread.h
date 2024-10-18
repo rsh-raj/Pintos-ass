@@ -92,6 +92,7 @@ struct thread
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+    int wakeup_time;                    /* wakeup time after a thread goes to sleep */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

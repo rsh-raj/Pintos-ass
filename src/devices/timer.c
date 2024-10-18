@@ -19,7 +19,8 @@
 
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
-
+static struct list sleeper_list;
+static struct lock sleeper_lock;
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
@@ -37,6 +38,8 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init(&sleeper_list);
+  lock_init(&sleeper_lock);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -83,17 +86,33 @@ timer_elapsed (int64_t then)
 {
   return timer_ticks () - then;
 }
+bool thread_wakeup_comp(const struct list_elem *a, const struct list_elem *b)
+{
+  struct thread *t1 = list_entry(a, struct thread, elem);
+  struct thread *t2 = list_entry(b, struct thread, elem);
+  return t1->wakeup_time < t2->wakeup_time;
+}
 
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
 timer_sleep (int64_t ticks) 
 {
+  if(ticks <= 0) return;
   int64_t start = timer_ticks ();
-
+  struct thread *current = thread_current();
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  enum intr_level old_intr_level = intr_disable();
+  /* Update the wakeup_time for thread */
+  current->wakeup_time = start + ticks;
+
+  /* Add the thread to sleeper list and block it */
+  lock_acquire(&sleeper_lock);
+  list_insert_ordered(&sleeper_list, &current->elem, thread_wakeup_comp);
+  lock_release(&sleeper_lock);
+  thread_block();
+  intr_set_level(old_intr_level);
+
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -166,12 +185,20 @@ timer_print_stats (void)
   printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
 
-/* Timer interrupt handler. */
+/* Timer interrupt handler. */      
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+  lock_acquire(&sleeper_lock);
+  while(!list_empty(&sleeper_list)){
+    struct thread *t = list_entry(list_front(&sleeper_list),struct thread, elem);
+    if (t->wakeup_time > ticks) break;
+    list_pop_front(&sleeper_list);
+    thread_unblock(t);
+  }
+  lock_release(&sleeper_lock);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
